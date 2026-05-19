@@ -16,31 +16,40 @@ Agent sessions can burn through context quickly: long assistant replies, pasted 
 | **Claude Code** | `~/.claude/projects/*.jsonl` |
 | **GitHub Copilot Chat** | VS Code `workspaceStorage` chat sessions (local, Insiders, remote/SSH paths) |
 
-## Install
+## Quick start
 
-Requires Python 3.9+.
+Requires [Python 3.9+](https://www.python.org/downloads/) on your PATH. One command sets up a local `.venv` (first run only) and runs the analysis:
 
 ```bash
 cd context-lens
+./run.sh          # macOS / Linux
+run.bat           # Windows
+python3 run.py    # any platform
+```
 
+Pass the same flags as the CLI (`--detail`, `--json`, `--debug-tokens`). On later runs, if dependencies are already installed, analysis starts immediately with no setup step.
+
+## Manual install (optional)
+
+If you prefer a persistent virtual environment you manage yourself:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
+context-lens
 ```
 
 ## Usage
 
-Run from any directory — it discovers sessions automatically:
+The bootstrap scripts above run the same analyzer. You can also invoke it directly after a manual install:
 
 ```bash
 context-lens
-```
-
-Or invoke the module directly:
-
-```bash
 python analyze.py
 ```
+
+Sessions are discovered automatically from your home directory — you do not need to run the tool from a specific project folder.
 
 ### Options
 
@@ -88,6 +97,8 @@ The report also breaks down total tokens by source: transcript (user vs assistan
 ## Project layout
 
 ```
+run.py                  # Bootstrap: venv + deps + analysis
+run.sh / run.bat        # Platform launchers
 analyze.py              # CLI entry point
 context_lens/
   scanner.py            # Discovers session files on disk

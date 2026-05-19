@@ -34,47 +34,105 @@ def _extract_text_from_message(message: dict) -> str:
     return "\n".join(parts)
 
 
-def _copilot_role(record: dict) -> str:
-    role = record.get("role", "")
-    if isinstance(role, str) and role:
-        return role
-    record_type = record.get("type", "")
-    if record_type in ("user", "assistant", "system"):
-        return record_type
-    message = record.get("message")
+def _empty_transcript_result() -> dict:
+    return {
+        "turns": 0,
+        "total_tokens": 0,
+        "user_tokens": 0,
+        "assistant_tokens": 0,
+        "max_turn_tokens": 0,
+        "max_turn_role": "",
+        "assistant_user_ratio": 0.0,
+    }
+
+
+def _load_copilot_session(path: Path) -> dict | None:
+    if path.suffix == ".json":
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                session_obj = json.load(handle)
+            return session_obj if isinstance(session_obj, dict) else None
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    if path.suffix == ".jsonl":
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(record, dict) and record.get("kind") == 0:
+                        snapshot = record.get("v", {})
+                        return snapshot if isinstance(snapshot, dict) else None
+        except OSError:
+            return None
+
+    return None
+
+
+def _copilot_user_text(req: dict) -> str:
+    message = req.get("message", {})
     if isinstance(message, dict):
-        msg_role = message.get("role", "")
-        if isinstance(msg_role, str):
-            return msg_role
+        text = message.get("text", "") or message.get("content", "")
+        return text if isinstance(text, str) else ""
+    if isinstance(message, str):
+        return message
     return ""
 
 
-def _extract_copilot_text(record: dict) -> str:
-    """Best-effort text extraction; Copilot JSONL schema varies by version."""
-    content = record.get("content")
-    if isinstance(content, str):
-        return content
+def _copilot_response_part_text(resp: object) -> str:
+    if isinstance(resp, str):
+        return resp
+    if not isinstance(resp, dict):
+        return ""
 
-    message = record.get("message")
+    value = resp.get("value")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_copilot_response_part_text(item) for item in value)
+
+    message = resp.get("message")
     if isinstance(message, dict):
-        text = _extract_text_from_message(message)
-        if text:
+        text = message.get("text", "") or message.get("content", "")
+        if isinstance(text, str):
             return text
-        if isinstance(message.get("content"), str):
-            return message["content"]
-        if isinstance(message.get("text"), str):
-            return message["text"]
 
-    for key in ("text", "body", "messageText"):
-        val = record.get(key)
-        if isinstance(val, str) and val:
-            return val
+    text = resp.get("text", "")
+    return text if isinstance(text, str) else ""
 
-    return ""
+
+def _copilot_assistant_text(response: object) -> str:
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        response = [response]
+    if not isinstance(response, list):
+        return ""
+
+    parts: list[str] = []
+    for resp in response:
+        text = _copilot_response_part_text(resp)
+        if text:
+            parts.append(text)
+    return "".join(parts)
 
 
 def analyze_copilot_transcript(path: Path) -> dict:
-    """Parse a Copilot Chat JSONL transcript (defensive, schema-tolerant)."""
+    """Parse a Copilot Chat session (.json snapshot or .jsonl kind=0 snapshot)."""
+    session_obj = _load_copilot_session(path)
+    if not session_obj:
+        return _empty_transcript_result()
+
+    requests = session_obj.get("requests", [])
+    if not isinstance(requests, list):
+        return _empty_transcript_result()
+
     turns = 0
     total_tokens = 0
     user_tokens = 0
@@ -82,39 +140,33 @@ def analyze_copilot_transcript(path: Path) -> dict:
     max_turn_tokens = 0
     max_turn_role = ""
 
-    with path.open(encoding="utf-8", errors="ignore") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    for req in requests:
+        if not isinstance(req, dict):
+            continue
 
-            if not isinstance(record, dict):
-                continue
+        user_text = _copilot_user_text(req)
+        asst_text = _copilot_assistant_text(req.get("response", []))
 
-            role = _copilot_role(record)
-            if role == "system":
-                continue
+        if not user_text and not asst_text:
+            continue
 
-            text = _extract_copilot_text(record)
-            turn_tokens = count_tokens(text)
-            if turn_tokens == 0 and not text:
-                continue
-
+        if user_text:
+            t = count_tokens(user_text)
             turns += 1
-            total_tokens += turn_tokens
+            total_tokens += t
+            user_tokens += t
+            if t > max_turn_tokens:
+                max_turn_tokens = t
+                max_turn_role = "user"
 
-            if role == "user":
-                user_tokens += turn_tokens
-            elif role == "assistant":
-                assistant_tokens += turn_tokens
-
-            if turn_tokens > max_turn_tokens:
-                max_turn_tokens = turn_tokens
-                max_turn_role = role
+        if asst_text:
+            t = count_tokens(asst_text)
+            turns += 1
+            total_tokens += t
+            assistant_tokens += t
+            if t > max_turn_tokens:
+                max_turn_tokens = t
+                max_turn_role = "assistant"
 
     ratio = assistant_tokens / user_tokens if user_tokens > 0 else 0.0
 
